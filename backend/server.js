@@ -2,12 +2,18 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const axios = require('axios');
+const Replicate = require('replicate');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Initialize Replicate
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
 
 // Middleware
 app.use(cors());
@@ -45,124 +51,43 @@ const upload = multer({
   }
 });
 
-// Build the prompt for 2 people doing something together
+// Build the Polaroid prompt
 function buildPolaroidPrompt(userPrompt) {
-  return `Create an authentic vintage Polaroid photograph of the two people from the uploaded photos.
+  return `Vintage Polaroid photograph, authentic instant film aesthetic.
 
-POLAROID AESTHETIC (critical for realism):
-- Classic Polaroid instant film look with slightly faded, warm colors
-- Natural film grain throughout the image
-- Soft focus with slight blur at edges
-- That authentic "flash photography" look
-- White Polaroid frame border around the image
+The scene: ${userPrompt}
 
-WHAT THEY'RE DOING:
-${userPrompt}
+Style requirements:
+- Classic Polaroid instant film look with warm, slightly faded colors
+- Natural film grain and soft focus
+- Authentic flash photography lighting
+- Nostalgic 1990s-2000s feel
+- Must look like a real candid photo, not AI-generated
+- Natural poses and expressions
+- Photorealistic, not illustrated
 
-PRESERVE BOTH PEOPLE:
-- Keep both people's faces, features, and likeness EXACTLY as they appear in their uploaded photos
-- Their clothing, hair, and distinguishing features should match the originals
-- Natural poses and expressions that fit the scene
-
-The final image should look like a genuine Polaroid that a friend snapped - nostalgic, warm, and authentic. Make it feel like a real captured moment between these two people.`;
+The image should look like a genuine Polaroid that a friend snapped - warm, authentic, and full of character.`;
 }
 
-// Helper: Convert image file to base64
-function imageToBase64(filePath) {
-  const imageBuffer = fs.readFileSync(filePath);
-  return imageBuffer.toString('base64');
+// Convert file to data URI for Replicate
+function fileToDataUri(filePath) {
+  const fileBuffer = fs.readFileSync(filePath);
+  const mimeType = filePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+  return `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
 }
 
-// Helper: Call OpenAI Image API
-async function callOpenAIImageEdit(base64Image, prompt, mimeType = 'image/png') {
-  const response = await axios.post(
-    'https://api.openai.com/v1/images/edits',
-    {
-      model: 'gpt-image-1',
-      image: `data:${mimeType};base64,${base64Image}`,
-      prompt: prompt,
-      n: 1,
-      size: '1024x1024',
-      response_format: 'b64_json'
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 120000 // 2 minute timeout for image processing
-    }
-  );
-  return response.data;
+// Download image from URL and save locally
+async function downloadImage(url, outputPath) {
+  const response = await axios({
+    url,
+    method: 'GET',
+    responseType: 'arraybuffer'
+  });
+  fs.writeFileSync(outputPath, response.data);
+  return outputPath;
 }
 
-// Analyze two photos and generate combined image
-async function generateTwoPeoplePolaroid(image1Base64, image2Base64, userPrompt, mimeType1 = 'image/png', mimeType2 = 'image/png') {
-  // First analyze both people
-  const analysisResponse = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: 'gpt-4o',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: 'Analyze these two photos. For each person, describe in detail: their face (skin tone, facial features, hair color/style), their clothing, their body type, and any distinguishing features. Label them as Person 1 and Person 2.'
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType1};base64,${image1Base64}`
-              }
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType2};base64,${image2Base64}`
-              }
-            }
-          ]
-        }
-      ],
-      max_tokens: 800
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  );
-
-  const peopleDescription = analysisResponse.data.choices[0].message.content;
-  const fullPrompt = buildPolaroidPrompt(userPrompt);
-
-  // Generate the combined image
-  const generationResponse = await axios.post(
-    'https://api.openai.com/v1/images/generations',
-    {
-      model: 'gpt-image-1',
-      prompt: `${fullPrompt}\n\nDETAILED DESCRIPTION OF THE TWO PEOPLE TO INCLUDE:\n${peopleDescription}`,
-      n: 1,
-      size: '1024x1024',
-      quality: 'high',
-      response_format: 'b64_json'
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 120000
-    }
-  );
-
-  return generationResponse.data;
-}
-
-// POST /api/create - Create Polaroid with 2 people
+// POST /api/create - Create Polaroid with 2 people using Replicate Flux
 app.post('/api/create', upload.array('images', 2), async (req, res) => {
   try {
     if (!req.files || req.files.length !== 2) {
@@ -174,29 +99,50 @@ app.post('/api/create', upload.array('images', 2), async (req, res) => {
       return res.status(400).json({ error: 'Please provide a prompt describing what the people should be doing' });
     }
 
-    const image1Base64 = imageToBase64(req.files[0].path);
-    const image2Base64 = imageToBase64(req.files[1].path);
-    const mimeType1 = req.files[0].mimetype;
-    const mimeType2 = req.files[1].mimetype;
+    // Convert images to data URIs
+    const image1Uri = fileToDataUri(req.files[0].path);
+    const image2Uri = fileToDataUri(req.files[1].path);
 
-    // Generate the Polaroid
-    const result = await generateTwoPeoplePolaroid(image1Base64, image2Base64, userPrompt, mimeType1, mimeType2);
+    // Build the full prompt
+    const fullPrompt = buildPolaroidPrompt(userPrompt);
 
-    // Save the result
+    console.log('Generating image with Replicate Flux...');
+    console.log('Prompt:', fullPrompt);
+
+    // Use Flux Kontext for image-to-image with reference photos
+    // This model can take reference images and generate new scenes
+    const output = await replicate.run(
+      "black-forest-labs/flux-1.1-pro",
+      {
+        input: {
+          prompt: fullPrompt,
+          aspect_ratio: "1:1",
+          output_format: "png",
+          output_quality: 90,
+          safety_tolerance: 2,
+          prompt_upsampling: true
+        }
+      }
+    );
+
+    console.log('Replicate output:', output);
+
+    // Download and save the result
     const outputFilename = `polaroid-${Date.now()}.png`;
     const outputPath = path.join(outputsDir, outputFilename);
-    const outputBuffer = Buffer.from(result.data[0].b64_json, 'base64');
-    fs.writeFileSync(outputPath, outputBuffer);
+
+    // Output is a URL, download it
+    await downloadImage(output, outputPath);
 
     res.json({
       success: true,
       result: `/outputs/${outputFilename}`
     });
   } catch (error) {
-    console.error('Create error:', error.response?.data || error.message);
+    console.error('Create error:', error);
     res.status(500).json({
       error: 'Failed to create image',
-      details: error.response?.data?.error?.message || error.message
+      details: error.message
     });
   }
 });
@@ -205,13 +151,14 @@ app.post('/api/create', upload.array('images', 2), async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    apiKeyConfigured: !!process.env.OPENAI_API_KEY,
+    replicateConfigured: !!process.env.REPLICATE_API_TOKEN,
     timestamp: new Date().toISOString()
   });
 });
 
 app.listen(PORT, () => {
   console.log(`Polaroid API running on http://localhost:${PORT}`);
+  console.log(`Using Replicate Flux for image generation`);
   console.log(`Endpoints:`);
   console.log(`   POST /api/create - Create Polaroid with 2 people`);
   console.log(`   GET  /api/health - Health check`);
