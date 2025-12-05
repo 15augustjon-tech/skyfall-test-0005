@@ -45,33 +45,27 @@ const upload = multer({
   }
 });
 
-// iPhone 17 Pro style characteristics based on research:
-// - Lively, rich colors with neutral white balance
-// - Wide dynamic range with smooth shadow/highlight transitions
-// - Sharp detail with natural rendering
-// - Warm, slightly saturated skin tones
-// - Deep Fusion processing for texture detail
-// - Smart HDR 5 for balanced exposure
+// Build the prompt for 2 people doing something together
+function buildPolaroidPrompt(userPrompt) {
+  return `Create an authentic vintage Polaroid photograph of the two people from the uploaded photos.
 
-const IPHONE_17_PRO_STYLE_PROMPT = `Transform this photo to match the iPhone 17 Pro camera style with these characteristics:
-- Rich, lively colors with accurate neutral white balance
-- Wide dynamic range with smooth transitions between shadows and highlights
-- Sharp detail with natural texture rendering (avoid painterly/artificial look)
-- Warm, naturally saturated skin tones if people are present
-- Deep Fusion-style processing that preserves fine textures and reduces noise
-- Smart HDR 5-style balanced exposure across the entire frame
-- Professional-grade clarity and contrast
-- Natural bokeh if depth is present
-Keep the composition identical, only enhance the color grading, dynamic range, and overall processing quality to match flagship iPhone 17 Pro output.`;
+POLAROID AESTHETIC (critical for realism):
+- Classic Polaroid instant film look with slightly faded, warm colors
+- Natural film grain throughout the image
+- Soft focus with slight blur at edges
+- That authentic "flash photography" look
+- White Polaroid frame border around the image
 
-const MONACO_SUPERCAR_PROMPT = `Replace the background of this photo with a luxurious Monaco setting featuring:
-- A stunning supercar (Lamborghini, Ferrari, or McLaren) parked nearby
-- The iconic Monaco harbor with luxury yachts in the background
-- Mediterranean blue sky with soft clouds
-- Palm trees and elegant architecture
-- Golden hour lighting with warm, cinematic tones
-- Reflective surfaces showing the glamorous atmosphere
-Keep the person/subject in the foreground perfectly preserved with natural lighting that matches the new background. Make the composite look completely realistic and seamless, as if the photo was actually taken in Monaco.`;
+WHAT THEY'RE DOING:
+${userPrompt}
+
+PRESERVE BOTH PEOPLE:
+- Keep both people's faces, features, and likeness EXACTLY as they appear in their uploaded photos
+- Their clothing, hair, and distinguishing features should match the originals
+- Natural poses and expressions that fit the scene
+
+The final image should look like a genuine Polaroid that a friend snapped - nostalgic, warm, and authentic. Make it feel like a real captured moment between these two people.`;
+}
 
 // Helper: Convert image file to base64
 function imageToBase64(filePath) {
@@ -102,9 +96,9 @@ async function callOpenAIImageEdit(base64Image, prompt, mimeType = 'image/png') 
   return response.data;
 }
 
-// Alternative: Use chat completions with vision for analysis + generation
-async function callOpenAIVisionAndGenerate(base64Image, prompt, mimeType = 'image/png') {
-  // First analyze the image
+// Analyze two photos and generate combined image
+async function generateTwoPeoplePolaroid(image1Base64, image2Base64, userPrompt, mimeType1 = 'image/png', mimeType2 = 'image/png') {
+  // First analyze both people
   const analysisResponse = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
@@ -115,18 +109,24 @@ async function callOpenAIVisionAndGenerate(base64Image, prompt, mimeType = 'imag
           content: [
             {
               type: 'text',
-              text: 'Analyze this image in detail. Describe the subject, their pose, clothing, and any important visual elements that need to be preserved.'
+              text: 'Analyze these two photos. For each person, describe in detail: their face (skin tone, facial features, hair color/style), their clothing, their body type, and any distinguishing features. Label them as Person 1 and Person 2.'
             },
             {
               type: 'image_url',
               image_url: {
-                url: `data:${mimeType};base64,${base64Image}`
+                url: `data:${mimeType1};base64,${image1Base64}`
+              }
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mimeType2};base64,${image2Base64}`
               }
             }
           ]
         }
       ],
-      max_tokens: 500
+      max_tokens: 800
     },
     {
       headers: {
@@ -136,14 +136,15 @@ async function callOpenAIVisionAndGenerate(base64Image, prompt, mimeType = 'imag
     }
   );
 
-  const imageDescription = analysisResponse.data.choices[0].message.content;
+  const peopleDescription = analysisResponse.data.choices[0].message.content;
+  const fullPrompt = buildPolaroidPrompt(userPrompt);
 
-  // Then generate new image with the prompt
+  // Generate the combined image
   const generationResponse = await axios.post(
     'https://api.openai.com/v1/images/generations',
     {
       model: 'gpt-image-1',
-      prompt: `${prompt}\n\nSubject to preserve: ${imageDescription}`,
+      prompt: `${fullPrompt}\n\nDETAILED DESCRIPTION OF THE TWO PEOPLE TO INCLUDE:\n${peopleDescription}`,
       n: 1,
       size: '1024x1024',
       quality: 'high',
@@ -161,124 +162,40 @@ async function callOpenAIVisionAndGenerate(base64Image, prompt, mimeType = 'imag
   return generationResponse.data;
 }
 
-// POST /api/upload - Upload an image
-app.post('/api/upload', upload.single('image'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No image file provided' });
-  }
-
-  res.json({
-    success: true,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    path: `/uploads/${req.file.filename}`,
-    fullPath: req.file.path
-  });
-});
-
-// POST /api/enhance/iphone17pro - Apply iPhone 17 Pro style
-app.post('/api/enhance/iphone17pro', upload.single('image'), async (req, res) => {
+// POST /api/create - Create Polaroid with 2 people
+app.post('/api/create', upload.array('images', 2), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
+    if (!req.files || req.files.length !== 2) {
+      return res.status(400).json({ error: 'Please upload exactly 2 photos' });
     }
 
-    const base64Image = imageToBase64(req.file.path);
-    const mimeType = req.file.mimetype;
+    const userPrompt = req.body.prompt;
+    if (!userPrompt || userPrompt.trim().length === 0) {
+      return res.status(400).json({ error: 'Please provide a prompt describing what the people should be doing' });
+    }
 
-    // Use OpenAI to enhance the image
-    const result = await callOpenAIImageEdit(base64Image, IPHONE_17_PRO_STYLE_PROMPT, mimeType);
+    const image1Base64 = imageToBase64(req.files[0].path);
+    const image2Base64 = imageToBase64(req.files[1].path);
+    const mimeType1 = req.files[0].mimetype;
+    const mimeType2 = req.files[1].mimetype;
+
+    // Generate the Polaroid
+    const result = await generateTwoPeoplePolaroid(image1Base64, image2Base64, userPrompt, mimeType1, mimeType2);
 
     // Save the result
-    const outputFilename = `iphone17pro-${Date.now()}.png`;
+    const outputFilename = `polaroid-${Date.now()}.png`;
     const outputPath = path.join(outputsDir, outputFilename);
     const outputBuffer = Buffer.from(result.data[0].b64_json, 'base64');
     fs.writeFileSync(outputPath, outputBuffer);
 
     res.json({
       success: true,
-      original: `/uploads/${req.file.filename}`,
-      enhanced: `/outputs/${outputFilename}`,
-      style: 'iPhone 17 Pro'
+      result: `/outputs/${outputFilename}`
     });
   } catch (error) {
-    console.error('Enhancement error:', error.response?.data || error.message);
+    console.error('Create error:', error.response?.data || error.message);
     res.status(500).json({
-      error: 'Failed to enhance image',
-      details: error.response?.data?.error?.message || error.message
-    });
-  }
-});
-
-// POST /api/enhance/monaco - Apply Monaco supercar background
-app.post('/api/enhance/monaco', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
-    }
-
-    const base64Image = imageToBase64(req.file.path);
-    const mimeType = req.file.mimetype;
-
-    // Use vision + generation for background replacement
-    const result = await callOpenAIVisionAndGenerate(base64Image, MONACO_SUPERCAR_PROMPT, mimeType);
-
-    // Save the result
-    const outputFilename = `monaco-${Date.now()}.png`;
-    const outputPath = path.join(outputsDir, outputFilename);
-    const outputBuffer = Buffer.from(result.data[0].b64_json, 'base64');
-    fs.writeFileSync(outputPath, outputBuffer);
-
-    res.json({
-      success: true,
-      original: `/uploads/${req.file.filename}`,
-      enhanced: `/outputs/${outputFilename}`,
-      style: 'Monaco Supercar'
-    });
-  } catch (error) {
-    console.error('Monaco enhancement error:', error.response?.data || error.message);
-    res.status(500).json({
-      error: 'Failed to apply Monaco background',
-      details: error.response?.data?.error?.message || error.message
-    });
-  }
-});
-
-// POST /api/enhance/full - Apply both: iPhone 17 Pro style + Monaco background
-app.post('/api/enhance/full', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
-    }
-
-    const base64Image = imageToBase64(req.file.path);
-    const mimeType = req.file.mimetype;
-
-    const FULL_PROMPT = `${MONACO_SUPERCAR_PROMPT}
-
-Additionally, apply iPhone 17 Pro camera processing:
-- Rich, lively colors with neutral white balance
-- Wide dynamic range with smooth shadow/highlight transitions
-- Sharp detail with natural texture rendering
-- Professional-grade clarity and cinematic color grading`;
-
-    const result = await callOpenAIVisionAndGenerate(base64Image, FULL_PROMPT, mimeType);
-
-    const outputFilename = `flex-photo-${Date.now()}.png`;
-    const outputPath = path.join(outputsDir, outputFilename);
-    const outputBuffer = Buffer.from(result.data[0].b64_json, 'base64');
-    fs.writeFileSync(outputPath, outputBuffer);
-
-    res.json({
-      success: true,
-      original: `/uploads/${req.file.filename}`,
-      enhanced: `/outputs/${outputFilename}`,
-      style: 'iPhone 17 Pro + Monaco Supercar'
-    });
-  } catch (error) {
-    console.error('Full enhancement error:', error.response?.data || error.message);
-    res.status(500).json({
-      error: 'Failed to process image',
+      error: 'Failed to create image',
       details: error.response?.data?.error?.message || error.message
     });
   }
@@ -294,11 +211,8 @@ app.get('/api/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Flex Photo API running on http://localhost:${PORT}`);
-  console.log(`📸 Endpoints:`);
-  console.log(`   POST /api/upload - Upload an image`);
-  console.log(`   POST /api/enhance/iphone17pro - Apply iPhone 17 Pro style`);
-  console.log(`   POST /api/enhance/monaco - Apply Monaco supercar background`);
-  console.log(`   POST /api/enhance/full - Apply both enhancements`);
+  console.log(`Polaroid API running on http://localhost:${PORT}`);
+  console.log(`Endpoints:`);
+  console.log(`   POST /api/create - Create Polaroid with 2 people`);
   console.log(`   GET  /api/health - Health check`);
 });

@@ -1,58 +1,64 @@
 import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { ReactCompareSlider, ReactCompareSliderImage } from 'react-compare-slider';
 import axios from 'axios';
 import './App.css';
 
 const API_URL = 'http://localhost:5000';
 
-type EnhancementMode = 'iphone17pro' | 'monaco' | 'full';
-
-interface ProcessedImage {
-  original: string;
-  enhanced: string;
-  style: string;
+interface PhotoState {
+  file: File | null;
+  preview: string | null;
 }
 
 function App() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
+  const [photo1, setPhoto1] = useState<PhotoState>({ file: null, preview: null });
+  const [photo2, setPhoto2] = useState<PhotoState>({ file: null, preview: null });
+  const [prompt, setPrompt] = useState('');
   const [processing, setProcessing] = useState(false);
-  const [result, setResult] = useState<ProcessedImage | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<EnhancementMode>('full');
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
+  const onDrop1 = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (file) {
-      setSelectedFile(file);
-      setPreview(URL.createObjectURL(file));
-      setResult(null);
+      setPhoto1({ file, preview: URL.createObjectURL(file) });
+      setResultUrl(null);
       setError(null);
     }
   }, []);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'image/*': ['.jpeg', '.jpg', '.png', '.webp']
-    },
+  const onDrop2 = useCallback((acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
+    if (file) {
+      setPhoto2({ file, preview: URL.createObjectURL(file) });
+      setResultUrl(null);
+      setError(null);
+    }
+  }, []);
+
+  const dropzoneConfig = {
+    accept: { 'image/*': ['.jpeg', '.jpg', '.png', '.webp'] },
     maxFiles: 1,
     maxSize: 20 * 1024 * 1024
-  });
+  };
 
-  const processImage = async () => {
-    if (!selectedFile) return;
+  const dropzone1 = useDropzone({ onDrop: onDrop1, ...dropzoneConfig });
+  const dropzone2 = useDropzone({ onDrop: onDrop2, ...dropzoneConfig });
+
+  const createPolaroid = async () => {
+    if (!photo1.file || !photo2.file || !prompt.trim()) return;
 
     setProcessing(true);
     setError(null);
 
     const formData = new FormData();
-    formData.append('image', selectedFile);
+    formData.append('images', photo1.file);
+    formData.append('images', photo2.file);
+    formData.append('prompt', prompt);
 
     try {
       const response = await axios.post(
-        `${API_URL}/api/enhance/${mode}`,
+        `${API_URL}/api/create`,
         formData,
         {
           headers: { 'Content-Type': 'multipart/form-data' },
@@ -60,105 +66,95 @@ function App() {
         }
       );
 
-      setResult({
-        original: `${API_URL}${response.data.original}`,
-        enhanced: `${API_URL}${response.data.enhanced}`,
-        style: response.data.style
-      });
+      setResultUrl(`${API_URL}${response.data.result}`);
     } catch (err: any) {
-      setError(err.response?.data?.details || err.message || 'Failed to process image');
+      setError(err.response?.data?.details || err.message || 'Failed to create image');
     } finally {
       setProcessing(false);
     }
   };
 
   const reset = () => {
-    setSelectedFile(null);
-    setPreview(null);
-    setResult(null);
+    setPhoto1({ file: null, preview: null });
+    setPhoto2({ file: null, preview: null });
+    setPrompt('');
+    setResultUrl(null);
     setError(null);
   };
+
+  const canCreate = photo1.file && photo2.file && prompt.trim().length > 0;
 
   return (
     <div className="app">
       <header className="header">
-        <h1>Flex Photo</h1>
-        <p>Transform your photos with iPhone 17 Pro quality & Monaco luxury vibes</p>
+        <h1>Polaroid Creator</h1>
+        <p>Upload 2 photos. Describe what they're doing. Get a realistic Polaroid.</p>
       </header>
 
       <main className="main">
-        {!result ? (
+        {!resultUrl ? (
           <>
-            <div className="mode-selector">
-              <h3>Choose Enhancement</h3>
-              <div className="mode-buttons">
-                <button
-                  className={`mode-btn ${mode === 'iphone17pro' ? 'active' : ''}`}
-                  onClick={() => setMode('iphone17pro')}
-                >
-                  <span className="mode-icon">iPhone</span>
-                  <span className="mode-label">iPhone 17 Pro</span>
-                  <span className="mode-desc">Color grading & quality</span>
-                </button>
-                <button
-                  className={`mode-btn ${mode === 'monaco' ? 'active' : ''}`}
-                  onClick={() => setMode('monaco')}
-                >
-                  <span className="mode-icon">Monaco</span>
-                  <span className="mode-label">Monaco Supercar</span>
-                  <span className="mode-desc">Luxury background</span>
-                </button>
-                <button
-                  className={`mode-btn ${mode === 'full' ? 'active' : ''}`}
-                  onClick={() => setMode('full')}
-                >
-                  <span className="mode-icon">Full</span>
-                  <span className="mode-label">Full Flex</span>
-                  <span className="mode-desc">Both enhancements</span>
-                </button>
+            <div className="photo-uploads">
+              <div
+                {...dropzone1.getRootProps()}
+                className={`dropzone small ${dropzone1.isDragActive ? 'active' : ''} ${photo1.preview ? 'has-preview' : ''}`}
+              >
+                <input {...dropzone1.getInputProps()} />
+                {photo1.preview ? (
+                  <img src={photo1.preview} alt="Person 1" className="preview-image" />
+                ) : (
+                  <div className="dropzone-content">
+                    <p>Person 1</p>
+                    <p className="dropzone-hint">Drop photo</p>
+                  </div>
+                )}
+              </div>
+
+              <div
+                {...dropzone2.getRootProps()}
+                className={`dropzone small ${dropzone2.isDragActive ? 'active' : ''} ${photo2.preview ? 'has-preview' : ''}`}
+              >
+                <input {...dropzone2.getInputProps()} />
+                {photo2.preview ? (
+                  <img src={photo2.preview} alt="Person 2" className="preview-image" />
+                ) : (
+                  <div className="dropzone-content">
+                    <p>Person 2</p>
+                    <p className="dropzone-hint">Drop photo</p>
+                  </div>
+                )}
               </div>
             </div>
 
-            <div
-              {...getRootProps()}
-              className={`dropzone ${isDragActive ? 'active' : ''} ${preview ? 'has-preview' : ''}`}
-            >
-              <input {...getInputProps()} />
-              {preview ? (
-                <div className="preview-container">
-                  <img src={preview} alt="Preview" className="preview-image" />
-                  <p className="preview-filename">{selectedFile?.name}</p>
-                </div>
-              ) : (
-                <div className="dropzone-content">
-                  <div className="dropzone-icon">Upload</div>
-                  <p>Drag & drop your photo here</p>
-                  <p className="dropzone-hint">or click to select</p>
-                </div>
-              )}
+            <div className="prompt-section">
+              <textarea
+                className="prompt-input"
+                placeholder="What are they doing? (e.g., 'Having coffee at a Paris cafe', 'At a concert together', 'On a beach at sunset')"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={3}
+              />
             </div>
 
-            {preview && (
-              <div className="actions">
-                <button
-                  className="btn btn-primary"
-                  onClick={processImage}
-                  disabled={processing}
-                >
-                  {processing ? (
-                    <>
-                      <span className="spinner"></span>
-                      Processing...
-                    </>
-                  ) : (
-                    `Apply ${mode === 'full' ? 'Full Flex' : mode === 'iphone17pro' ? 'iPhone 17 Pro' : 'Monaco'}`
-                  )}
-                </button>
-                <button className="btn btn-secondary" onClick={reset} disabled={processing}>
-                  Clear
-                </button>
-              </div>
-            )}
+            <div className="actions">
+              <button
+                className="btn btn-primary"
+                onClick={createPolaroid}
+                disabled={processing || !canCreate}
+              >
+                {processing ? (
+                  <>
+                    <span className="spinner"></span>
+                    Creating Polaroid...
+                  </>
+                ) : (
+                  'Create Polaroid'
+                )}
+              </button>
+              <button className="btn btn-secondary" onClick={reset} disabled={processing}>
+                Clear
+              </button>
+            </div>
 
             {error && (
               <div className="error">
@@ -168,40 +164,22 @@ function App() {
           </>
         ) : (
           <div className="result">
-            <h2>{result.style} Applied</h2>
+            <h2>Your Polaroid</h2>
 
-            <div className="compare-container">
-              <ReactCompareSlider
-                itemOne={
-                  <ReactCompareSliderImage
-                    src={result.original}
-                    alt="Original"
-                  />
-                }
-                itemTwo={
-                  <ReactCompareSliderImage
-                    src={result.enhanced}
-                    alt="Enhanced"
-                  />
-                }
-                style={{ width: '100%', height: '500px' }}
-              />
-              <div className="compare-labels">
-                <span>Original</span>
-                <span>Enhanced</span>
-              </div>
+            <div className="result-image-container">
+              <img src={resultUrl} alt="Generated Polaroid" className="result-image" />
             </div>
 
             <div className="result-actions">
               <a
-                href={result.enhanced}
-                download="flex-photo-enhanced.png"
+                href={resultUrl}
+                download="polaroid.png"
                 className="btn btn-primary"
               >
-                Download Enhanced
+                Download
               </a>
               <button className="btn btn-secondary" onClick={reset}>
-                Process Another
+                Create Another
               </button>
             </div>
           </div>
@@ -209,7 +187,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>Powered by OpenAI GPT-4o | iPhone 17 Pro color science</p>
+        <p>Powered by GPT-4o</p>
       </footer>
     </div>
   );
